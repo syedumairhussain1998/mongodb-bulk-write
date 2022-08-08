@@ -1,0 +1,111 @@
+const bulkUpdate = [] /* array of query operations to be passed in bulkWrite() */
+
+                /* get all the products having same bundleSize in status = 'prep-completed */
+                result = await ProductModel.find({
+                    orderId: mongoId(previousData.orderId),
+                    bundleSize: previousData.bundleSize,
+                    _id: { $ne: previousData._id },
+                    status: 'prep-completed',
+                })
+                    .select({
+                        _id: 1,
+                        unitsInStorage: 1,
+                        quantityReceived: 1,
+                        productUOM: 1,
+                        title: 1,
+                        status: 1,
+                        quantityOrdered: 1,
+                        unitsToAMZ: 1,
+                        cartonsQuantity: 1,
+                        servicePerformed: 1,
+                    })
+                    .lean()
+                    .exec()
+                if (result) {
+                    let bulkObject = {}
+                    for (let i = 0; i < result.length; i++) {
+                        let updatedProducts = {}
+                        const quantity =
+                            result[i].servicePerformed === 'StandardPrep'
+                                ? result[i].quantityOrdered
+                                : result[i].cartonsQuantity
+                        updatedProducts._id = result[i]._id
+                        if (
+                            quantity <= result[i].quantityReceived &&
+                            quantity <=
+                                Math.floor(
+                                    result[i].unitsInStorage /
+                                        result[i].productUOM
+                                ) *
+                                    result[i].productUOM &&
+                            result[i].unitsInStorage % result[i].productUOM == 0
+                        ) {
+                            updatedProducts.unitsInStorage =
+                                result[i].unitsInStorage -
+                                Math.floor(
+                                    result[i].unitsInStorage /
+                                        result[i].productUOM
+                                ) *
+                                    result[i].productUOM
+
+                            updatedProducts.unitsToAMZ = orderData.createdAfterStatusChange
+                                ? Math.floor(
+                                      result[i].unitsInStorage /
+                                          result[i].productUOM
+                                  )
+                                : result[i].unitsToAMZ +
+                                  Math.floor(
+                                      result[i].unitsInStorage /
+                                          result[i].productUOM
+                                  ) *
+                                      result[i].productUOM
+                            updatedProducts.status = 'shipped'
+                        } else {
+                            if (
+                                result[i].unitsInStorage %
+                                    result[i].productUOM ==
+                                0
+                            ) {
+                                updatedProducts.unitsInStorage =
+                                    result[i].quantity -
+                                    result[i].unitsInStorage
+                            } else {
+                                updatedProducts.unitsInStorage =
+                                    result[i].unitsInStorage %
+                                    result[i].productUOM
+                            }
+                            updatedProducts.unitsToAMZ = orderData.createdAfterStatusChange
+                                ? result[i].unitsToAMZ +
+                                  Math.floor(
+                                      result[i].unitsInStorage /
+                                          result[i].productUOM
+                                  )
+                                : result[i].unitsToAMZ +
+                                  Math.floor(
+                                      result[i].unitsInStorage /
+                                          result[i].productUOM
+                                  ) *
+                                      result[i].productUOM
+
+                            updatedProducts.unitsPrepped = 0
+                            updatedProducts.status = 'partially-shipped'
+                        }
+
+                        /* object of operation to be pass in bulkWrite()*/
+                        bulkObject = {
+                            updateOne: {
+                                filter: { _id: updatedProducts._id },
+                                update: { $set: updatedProducts },
+                            },
+                        }
+                        bulkUpdate.push(bulkObject)
+                        updatedProducts = {}
+                        bulkObject = {}
+                    }
+                    const session = await startSession()
+                    await session.withTransaction(async () => {
+                        await ProductModel.bulkWrite(bulkUpdate)
+                    })
+                    await session.commitTransaction()
+                    session.endSession()
+                }
